@@ -696,8 +696,12 @@ pub(super) fn apply_context_menu_action(
     menu: ContextMenuState,
     idx: usize,
 ) {
-    let item = menu.items().get(idx).copied();
-    match (menu.kind, item) {
+    let item = menu.items().get(idx).cloned();
+    let builtin = match item {
+        Some(crate::app::state::ContextMenuItem::Builtin(label)) => Some(label),
+        Some(crate::app::state::ContextMenuItem::Plugin { .. }) | None => None,
+    };
+    match (menu.kind, builtin) {
         (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
@@ -1125,8 +1129,46 @@ impl App {
     }
 
     pub(crate) fn apply_context_menu_action_via_api(&mut self, menu: ContextMenuState, idx: usize) {
-        let item = menu.items().get(idx).copied();
-        match (menu.kind, item) {
+        let item = menu.items().get(idx).cloned();
+        if let Some(crate::app::state::ContextMenuItem::Plugin {
+            plugin_id,
+            action_id,
+            ..
+        }) = item
+        {
+            match menu.kind {
+                ContextMenuKind::Pane {
+                    ws_idx, pane_id, ..
+                } => {
+                    self.focus_pane_internal_via_api(ws_idx, pane_id);
+                }
+                ContextMenuKind::Tab { ws_idx, tab_idx } => {
+                    self.focus_workspace_idx_via_api(ws_idx);
+                    self.focus_tab_idx_via_api(tab_idx);
+                }
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. } => {
+                    self.focus_workspace_idx_via_api(ws_idx);
+                }
+            }
+            if let Err(err) =
+                self.invoke_plugin_action_from_context_menu(&plugin_id, &action_id)
+            {
+                tracing::warn!(
+                    plugin_id = %plugin_id,
+                    action_id = %action_id,
+                    error = %err,
+                    "failed to invoke plugin action from context menu"
+                );
+            }
+            leave_modal(&mut self.state);
+            return;
+        }
+        let builtin = match item {
+            Some(crate::app::state::ContextMenuItem::Builtin(label)) => Some(label),
+            Some(crate::app::state::ContextMenuItem::Plugin { .. }) | None => None,
+        };
+        match (menu.kind, builtin) {
             (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
                 self.state.request_new_linked_worktree = Some(ws_idx);
                 leave_modal(&mut self.state);
@@ -1955,17 +1997,12 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
+        let menu = ContextMenuState::builtin(ContextMenuKind::GitWorkspace {
                 ws_idx: 0,
                 is_linked_worktree: false,
                 has_worktree_children: true,
                 collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 1);
@@ -1999,22 +2036,17 @@ mod tests {
             is_linked_worktree: true,
         });
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::Pane {
+        let menu = ContextMenuState::builtin(ContextMenuKind::Pane {
                 ws_idx: 0,
                 tab_idx: 0,
                 pane_id,
                 source_pane_id: None,
                 has_manual_label: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
         let idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item.label() == "Close pane")
             .expect("close pane item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
@@ -2033,19 +2065,14 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 1;
         app.state.mode = Mode::ContextMenu;
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::Tab {
+        let menu = ContextMenuState::builtin(ContextMenuKind::Tab {
                 ws_idx: 0,
                 tab_idx: 0,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
         let idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Close")
+            .position(|item| item.label() == "Close")
             .expect("close tab item");
 
         app.apply_context_menu_action_via_api(menu, idx);
@@ -2064,22 +2091,17 @@ mod tests {
         app.state.selected = 1;
         app.state.mode = Mode::ContextMenu;
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let mut menu = ContextMenuState {
-            kind: ContextMenuKind::Pane {
+        let mut menu = ContextMenuState::builtin(ContextMenuKind::Pane {
                 ws_idx: 0,
                 tab_idx: 0,
                 pane_id,
                 source_pane_id: None,
                 has_manual_label: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
         let close_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item.label() == "Close pane")
             .expect("close pane item");
         menu.list.highlighted = close_idx;
         app.state.context_menu = Some(menu);

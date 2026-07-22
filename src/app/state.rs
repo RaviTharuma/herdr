@@ -1217,101 +1217,235 @@ pub enum ContextMenuKind {
     },
 }
 
+/// One row in a right-click context menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuItem {
+    Builtin(&'static str),
+    Plugin {
+        plugin_id: String,
+        action_id: String,
+        title: String,
+    },
+}
+
+impl ContextMenuItem {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Builtin(label) => label,
+            Self::Plugin { title, .. } => title.as_str(),
+        }
+    }
+}
+
 /// Right-click context menu state.
 pub struct ContextMenuState {
     pub kind: ContextMenuKind,
     pub x: u16,
     pub y: u16,
     pub list: MenuListState,
+    /// Snapshot of menu rows, including enabled plugin actions for this context.
+    pub items: Vec<ContextMenuItem>,
 }
 
 impl ContextMenuState {
-    pub fn items(&self) -> &'static [&'static str] {
-        match self.kind {
-            ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => &["Rename", "Close", "New worktree", "Open worktree..."],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: true,
-                ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: true,
-                ..
-            } => &[
-                "Rename",
-                "Close group",
-                "New worktree",
-                "Open worktree...",
-                "Expand",
-            ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-                ..
-            } => &[
-                "Rename",
-                "Close group",
-                "New worktree",
-                "Open worktree...",
-                "Collapse",
-            ],
-            ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
-            ContextMenuKind::Pane {
-                has_manual_label: true,
-                source_pane_id: Some(_),
-                ..
-            } => &[
-                "Rename pane",
-                "Clear pane name",
-                "Swap with focused pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: false,
-                source_pane_id: Some(_),
-                ..
-            } => &[
-                "Rename pane",
-                "Swap with focused pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: true,
-                source_pane_id: None,
-                ..
-            } => &[
-                "Rename pane",
-                "Clear pane name",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: false,
-                source_pane_id: None,
-                ..
-            } => &[
-                "Rename pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
+    pub fn new(kind: ContextMenuKind, x: u16, y: u16, plugins: &InstalledPluginRegistry) -> Self {
+        let items = context_menu_items_for(&kind, plugins);
+        Self {
+            kind,
+            x,
+            y,
+            list: MenuListState::new(0),
+            items,
         }
+    }
+
+    /// Build a menu without scanning plugins (tests / pure builtin menus).
+    pub fn builtin(kind: ContextMenuKind, x: u16, y: u16) -> Self {
+        Self::new(kind, x, y, &InstalledPluginRegistry::new())
+    }
+
+    pub fn items(&self) -> &[ContextMenuItem] {
+        &self.items
+    }
+
+    pub fn labels(&self) -> Vec<&str> {
+        self.items.iter().map(ContextMenuItem::label).collect()
+    }
+}
+
+fn builtin_context_menu_labels(kind: &ContextMenuKind) -> &'static [&'static str] {
+    match kind {
+        ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: false,
+            has_worktree_children: false,
+            ..
+        } => &["Rename", "Close", "New worktree", "Open worktree..."],
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: true,
+            ..
+        } => &["Rename", "Close", "Delete worktree checkout..."],
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: false,
+            has_worktree_children: true,
+            collapsed: true,
+            ..
+        } => &[
+            "Rename",
+            "Close group",
+            "New worktree",
+            "Open worktree...",
+            "Expand",
+        ],
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: false,
+            has_worktree_children: true,
+            collapsed: false,
+            ..
+        } => &[
+            "Rename",
+            "Close group",
+            "New worktree",
+            "Open worktree...",
+            "Collapse",
+        ],
+        ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
+        ContextMenuKind::Pane {
+            has_manual_label: true,
+            source_pane_id: Some(_),
+            ..
+        } => &[
+            "Rename pane",
+            "Clear pane name",
+            "Swap with focused pane",
+            "Split right",
+            "Split down",
+            "Zoom",
+            "Close pane",
+        ],
+        ContextMenuKind::Pane {
+            has_manual_label: false,
+            source_pane_id: Some(_),
+            ..
+        } => &[
+            "Rename pane",
+            "Swap with focused pane",
+            "Split right",
+            "Split down",
+            "Zoom",
+            "Close pane",
+        ],
+        ContextMenuKind::Pane {
+            has_manual_label: true,
+            source_pane_id: None,
+            ..
+        } => &[
+            "Rename pane",
+            "Clear pane name",
+            "Split right",
+            "Split down",
+            "Zoom",
+            "Close pane",
+        ],
+        ContextMenuKind::Pane {
+            has_manual_label: false,
+            source_pane_id: None,
+            ..
+        } => &[
+            "Rename pane",
+            "Split right",
+            "Split down",
+            "Zoom",
+            "Close pane",
+        ],
+    }
+}
+
+fn context_menu_action_context(
+    kind: &ContextMenuKind,
+) -> crate::api::schema::PluginActionContext {
+    match kind {
+        ContextMenuKind::Workspace { .. } | ContextMenuKind::GitWorkspace { .. } => {
+            crate::api::schema::PluginActionContext::Workspace
+        }
+        ContextMenuKind::Tab { .. } => crate::api::schema::PluginActionContext::Tab,
+        ContextMenuKind::Pane { .. } => crate::api::schema::PluginActionContext::Pane,
+    }
+}
+
+fn context_menu_items_for(
+    kind: &ContextMenuKind,
+    plugins: &InstalledPluginRegistry,
+) -> Vec<ContextMenuItem> {
+    let mut items: Vec<ContextMenuItem> = builtin_context_menu_labels(kind)
+        .iter()
+        .copied()
+        .map(ContextMenuItem::Builtin)
+        .collect();
+    items.extend(plugin_context_menu_items(kind, plugins));
+    items
+}
+
+fn plugin_context_menu_items(
+    kind: &ContextMenuKind,
+    plugins: &InstalledPluginRegistry,
+) -> Vec<ContextMenuItem> {
+    let action_context = context_menu_action_context(kind);
+    let host = context_menu_host_platform();
+    let mut items = Vec::new();
+    let mut plugin_ids = plugins.keys().cloned().collect::<Vec<_>>();
+    plugin_ids.sort();
+    for plugin_id in plugin_ids {
+        let Some(plugin) = plugins.get(&plugin_id) else {
+            continue;
+        };
+        if !plugin.enabled {
+            continue;
+        }
+        for action in &plugin.actions {
+            if !action.contexts.contains(&action_context) {
+                continue;
+            }
+            let platforms = action.platforms.as_ref().or(plugin.platforms.as_ref());
+            if let Some(platforms) = platforms {
+                if !platforms.contains(&host) {
+                    continue;
+                }
+            }
+            items.push(ContextMenuItem::Plugin {
+                plugin_id: plugin.plugin_id.clone(),
+                action_id: action.id.clone(),
+                title: action.title.clone(),
+            });
+        }
+    }
+    items.sort_by(|left, right| match (left, right) {
+        (
+            ContextMenuItem::Plugin {
+                plugin_id: left_plugin,
+                action_id: left_action,
+                ..
+            },
+            ContextMenuItem::Plugin {
+                plugin_id: right_plugin,
+                action_id: right_action,
+                ..
+            },
+        ) => left_plugin
+            .cmp(right_plugin)
+            .then_with(|| left_action.cmp(right_action)),
+        _ => std::cmp::Ordering::Equal,
+    });
+    items
+}
+
+fn context_menu_host_platform() -> crate::api::schema::PluginPlatform {
+    if cfg!(target_os = "linux") {
+        crate::api::schema::PluginPlatform::Linux
+    } else if cfg!(target_os = "macos") {
+        crate::api::schema::PluginPlatform::Macos
+    } else {
+        crate::api::schema::PluginPlatform::Windows
     }
 }
 
@@ -2458,61 +2592,46 @@ mod tests {
 
     #[test]
     fn linked_worktree_context_menu_keeps_safe_close_and_explicit_remove() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
+        let menu = ContextMenuState::builtin(ContextMenuKind::GitWorkspace {
                 ws_idx: 0,
                 is_linked_worktree: true,
                 has_worktree_children: false,
                 collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
 
         assert_eq!(
-            menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            menu.labels(),
+            vec!["Rename", "Close", "Delete worktree checkout..."]
         );
     }
 
     #[test]
     fn git_workspace_context_menu_keeps_remove_for_managed_worktrees_only() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
+        let menu = ContextMenuState::builtin(ContextMenuKind::GitWorkspace {
                 ws_idx: 0,
                 is_linked_worktree: false,
                 has_worktree_children: false,
                 collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
 
         assert_eq!(
-            menu.items(),
-            &["Rename", "Close", "New worktree", "Open worktree..."]
+            menu.labels(),
+            vec!["Rename", "Close", "New worktree", "Open worktree..."]
         );
     }
 
     #[test]
     fn parent_worktree_context_menu_uses_repo_actions() {
-        let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
+        let menu = ContextMenuState::builtin(ContextMenuKind::GitWorkspace {
                 ws_idx: 0,
                 is_linked_worktree: false,
                 has_worktree_children: true,
                 collapsed: false,
-            },
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
+            }, 0, 0);
 
         assert_eq!(
-            menu.items(),
-            &[
+            menu.labels(),
+            vec![
                 "Rename",
                 "Close group",
                 "New worktree",
@@ -2521,4 +2640,69 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn pane_context_menu_appends_enabled_plugin_actions() {
+        let plugins = std::collections::HashMap::from([(
+            "example.mover".to_string(),
+            crate::api::schema::InstalledPluginInfo {
+                plugin_id: "example.mover".into(),
+                name: "Mover".into(),
+                version: "0.1.0".into(),
+                min_herdr_version: "0.7.0".into(),
+                description: None,
+                manifest_path: "/tmp/example.mover/herdr-plugin.toml".into(),
+                plugin_root: "/tmp/example.mover".into(),
+                enabled: true,
+                platforms: None,
+                build: Vec::new(),
+                startup: Vec::new(),
+                actions: vec![crate::api::schema::PluginManifestAction {
+                    id: "open".into(),
+                    title: "Move this pane…".into(),
+                    description: None,
+                    contexts: vec![crate::api::schema::PluginActionContext::Pane],
+                    platforms: None,
+                    command: vec!["true".into()],
+                }],
+                events: Vec::new(),
+                panes: Vec::new(),
+                link_handlers: Vec::new(),
+                source: crate::api::schema::PluginSourceInfo::default(),
+                warnings: Vec::new(),
+            },
+        )]);
+        let menu = ContextMenuState::new(
+            ContextMenuKind::Pane {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id: crate::layout::PaneId::from_raw(1),
+                source_pane_id: None,
+                has_manual_label: false,
+            },
+            0,
+            0,
+            &plugins,
+        );
+        assert_eq!(
+            menu.labels(),
+            vec![
+                "Rename pane",
+                "Split right",
+                "Split down",
+                "Zoom",
+                "Close pane",
+                "Move this pane…",
+            ]
+        );
+        assert!(matches!(
+            menu.items().last(),
+            Some(ContextMenuItem::Plugin {
+                plugin_id,
+                action_id,
+                ..
+            }) if plugin_id == "example.mover" && action_id == "open"
+        ));
+    }
+
 }

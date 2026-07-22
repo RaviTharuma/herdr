@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Right-click context menus now include enabled plugin actions whose manifest `contexts` match the target (workspace, tab, or pane). Choosing one focuses the target and invokes the action with `invocation_source = "context_menu"`.
+
 ## [0.7.5] - 2026-07-21
 
 ### Breaking Changes

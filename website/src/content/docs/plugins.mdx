@@ -111,6 +111,14 @@ They may use ASCII letters, digits, colon, underscore, and hyphen, but not
 dots. Each id type must be unique inside a plugin. Herdr qualifies action ids
 as `plugin.id.action` when it needs a globally unique name.
 
+Actions that declare `contexts = ["pane"]`, `["tab"]`, or `["workspace"]` also
+appear on the matching right-click context menu when the plugin is enabled and
+supports the current platform. Choosing a plugin row focuses that target, then
+invokes the action with `invocation_source = "context_menu"` and the usual
+`HERDR_PLUGIN_CONTEXT_JSON` fields. Empty `contexts` keeps the action
+keybind/CLI-only and does not add a menu row.
+
+
 Use `platforms = ["linux", "macos", "windows"]` to declare where the plugin
 can run. Build commands, startup hooks, actions, event hooks, panes, and link
 handlers can also declare their own `platforms`; item-level platforms override

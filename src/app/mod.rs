@@ -5067,11 +5067,14 @@ last_pane = "prefix+tab"
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
-        app.state.context_menu = Some(state::ContextMenuState {
-            kind: state::ContextMenuKind::Workspace { ws_idx: 1 },
-            x: 2,
-            y: 2,
-            list: state::MenuListState::new(1),
+        app.state.context_menu = Some({
+            let mut menu = state::ContextMenuState::builtin(
+                state::ContextMenuKind::Workspace { ws_idx: 1 },
+                2,
+                2,
+            );
+            menu.list = state::MenuListState::new(1);
+            menu
         });
         app.state.mode = Mode::ContextMenu;
 

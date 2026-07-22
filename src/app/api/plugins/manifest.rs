@@ -507,7 +507,7 @@ fn normalize_platforms(
 }
 
 /// Returns the platform the current binary was compiled for.
-fn current_platform() -> PluginPlatform {
+pub(crate) fn current_platform() -> PluginPlatform {
     if cfg!(target_os = "linux") {
         PluginPlatform::Linux
     } else if cfg!(target_os = "macos") {
@@ -520,7 +520,7 @@ fn current_platform() -> PluginPlatform {
 /// Resolve the effective platforms for an action or event: use the item's own
 /// platforms if declared, otherwise inherit from the plugin-level platforms.
 /// Returns a reference to whichever `Option<Vec<PluginPlatform>>` applies.
-pub(super) fn effective_platforms<'a>(
+pub(crate) fn effective_platforms<'a>(
     item_platforms: &'a Option<Vec<PluginPlatform>>,
     plugin_platforms: &'a Option<Vec<PluginPlatform>>,
 ) -> &'a Option<Vec<PluginPlatform>> {

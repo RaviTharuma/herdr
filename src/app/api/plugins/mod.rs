@@ -1,6 +1,6 @@
 mod context;
 mod env;
-mod manifest;
+pub(crate) mod manifest;
 mod panes;
 mod runtime;
 
@@ -220,6 +220,38 @@ impl App {
                 log,
             },
         )
+    }
+
+    pub(crate) fn invoke_plugin_action_from_context_menu(
+        &mut self,
+        plugin_id: &str,
+        action_id: &str,
+    ) -> Result<(), String> {
+        self.refresh_installed_plugins()
+            .map_err(|err| format!("failed to load plugin registry: {err}"))?;
+        let (plugin, action) = self
+            .find_plugin_action(Some(plugin_id), action_id)
+            .map_err(|(_, message)| message)?;
+        if !plugin.enabled {
+            return Err(format!("plugin {} is disabled", plugin.plugin_id));
+        }
+        ensure_platform_supported(
+            effective_platforms(&action.platforms, &plugin.platforms),
+            &action.qualified_id(),
+        )
+        .map_err(|(_, message)| message)?;
+        let mut context = self.current_plugin_context("context_menu");
+        context.invocation_source = Some("context_menu".to_string());
+        self.start_plugin_command(
+            &plugin,
+            Some(action.action_id),
+            None,
+            action.command,
+            &context,
+            None,
+        )
+        .map(|_| ())
+        .map_err(|(_, message)| message)
     }
 
     pub(crate) fn invoke_plugin_action_from_keybind(

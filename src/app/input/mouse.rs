@@ -6,8 +6,7 @@ use tracing::warn;
 use crate::{
     app::state::{
         AgentPanelSort, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
-        MenuListState, Mode, RightClickPassthroughGesture, TabPressState, ViewLayout,
-        WorkspacePressState,
+        Mode, RightClickPassthroughGesture, TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -1046,12 +1045,12 @@ impl AppState {
                             })
                         })
                         .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
-                    self.context_menu = Some(ContextMenuState {
+                    self.context_menu = Some(ContextMenuState::new(
                         kind,
-                        x: mouse.column,
-                        y: mouse.row,
-                        list: MenuListState::new(0),
-                    });
+                        mouse.column,
+                        mouse.row,
+                        &self.installed_plugins,
+                    ));
                     self.mode = Mode::ContextMenu;
                 }
             }
@@ -1062,12 +1061,12 @@ impl AppState {
                 if let (Some(ws_idx), Some(tab_idx)) =
                     (self.active, self.tab_at(mouse.column, mouse.row))
                 {
-                    self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Tab { ws_idx, tab_idx },
-                        x: mouse.column,
-                        y: mouse.row,
-                        list: MenuListState::new(0),
-                    });
+                    self.context_menu = Some(ContextMenuState::new(
+                        ContextMenuKind::Tab { ws_idx, tab_idx },
+                        mouse.column,
+                        mouse.row,
+                        &self.installed_plugins,
+                    ));
                     self.mode = Mode::ContextMenu;
                 }
             }
@@ -1092,18 +1091,18 @@ impl AppState {
                         .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
                         .and_then(|terminal| terminal.manual_label.as_ref())
                         .is_some();
-                    self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Pane {
+                    self.context_menu = Some(ContextMenuState::new(
+                        ContextMenuKind::Pane {
                             ws_idx,
                             tab_idx,
                             pane_id: info.id,
                             source_pane_id,
                             has_manual_label,
                         },
-                        x: mouse.column,
-                        y: mouse.row,
-                        list: MenuListState::new(0),
-                    });
+                        mouse.column,
+                        mouse.row,
+                        &self.installed_plugins,
+                    ));
                     self.mode = Mode::ContextMenu;
                 }
             }
@@ -1215,7 +1214,7 @@ impl AppState {
         let max_item_w = menu
             .items()
             .iter()
-            .map(|item| item.len() as u16)
+            .map(|item| item.label().len() as u16)
             .max()
             .unwrap_or(0);
         let menu_w = (max_item_w + 4).max(14).min(screen.width.max(1));
@@ -2300,7 +2299,7 @@ mod tests {
         let swap_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Swap with focused pane")
+            .position(|item| item.label() == "Swap with focused pane")
             .expect("swap item");
         menu.list.highlighted = swap_idx;
 
@@ -2459,12 +2458,7 @@ mod tests {
     #[test]
     fn hovering_context_menu_updates_highlight() {
         let mut app = app_for_mouse_test();
-        app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 0 },
-            x: 2,
-            y: 2,
-            list: MenuListState::new(0),
-        });
+        app.state.context_menu = Some(ContextMenuState::builtin(ContextMenuKind::Workspace { ws_idx: 0 }, 2, 2));
         app.state.mode = Mode::ContextMenu;
 
         let menu = app.state.context_menu_rect().unwrap();
@@ -2753,11 +2747,10 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 1 },
-            x: 2,
-            y: 2,
-            list: MenuListState::new(1),
+        app.state.context_menu = Some({
+            let mut menu = ContextMenuState::builtin(ContextMenuKind::Workspace { ws_idx: 1 }, 2, 2);
+            menu.list = MenuListState::new(1);
+            menu
         });
         app.state.mode = Mode::ContextMenu;
         handle_context_menu_key(
@@ -2793,11 +2786,10 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
-        app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 1 },
-            x: 2,
-            y: 2,
-            list: MenuListState::new(1),
+        app.state.context_menu = Some({
+            let mut menu = ContextMenuState::builtin(ContextMenuKind::Workspace { ws_idx: 1 }, 2, 2);
+            menu.list = MenuListState::new(1);
+            menu
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -2839,17 +2831,16 @@ mod tests {
         app.state.selected = 0;
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let runtime_count = app.terminal_runtimes.len();
-        app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Pane {
+        app.state.context_menu = Some({
+            let mut menu = ContextMenuState::builtin(ContextMenuKind::Pane {
                 ws_idx: 0,
                 tab_idx: 0,
                 pane_id,
                 source_pane_id: None,
                 has_manual_label: false,
-            },
-            x: 2,
-            y: 2,
-            list: MenuListState::new(1),
+            }, 2, 2);
+            menu.list = MenuListState::new(1);
+            menu
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -3393,7 +3384,7 @@ mod tests {
         let close_idx = menu_state
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item.label() == "Close pane")
             .expect("close pane menu item");
         let menu = app
             .state
@@ -3446,7 +3437,7 @@ mod tests {
         let close_idx = menu_state
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item.label() == "Close pane")
             .expect("close pane menu item");
         let menu = app
             .state
