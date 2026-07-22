@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=7
+// HERDR_INTEGRATION_VERSION=8
 // @ts-nocheck
 
 import net from "node:net";
@@ -64,6 +64,9 @@ type QueuedState = {
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
+// Prefer existing harness/chat names once set. First-prompt heuristic only fills
+// the empty slot once per session; later prompts must not clobber it.
+let heuristicTitleReported = false;
 
 function nextReportSeq(): number {
   reportSeq += 1;
@@ -174,6 +177,11 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
 function reportTitle(title: string | undefined, clear = false): Promise<void> {
   if (!clear && !title) {
     return Promise.resolve();
+  }
+  if (clear) {
+    heuristicTitleReported = false;
+  } else {
+    heuristicTitleReported = true;
   }
   return sendRequest({
     id: `${source}:title:${Date.now()}:${Math.random().toString(36).slice(2)}`,
@@ -319,6 +327,10 @@ export default function (pi) {
       return;
     }
     updateSessionRef(ctx);
+    // Once per session only — keep any later harness/manual name intact.
+    if (heuristicTitleReported) {
+      return;
+    }
     const title = summarizeTitle(event?.prompt);
     if (title) {
       void reportTitle(title);

@@ -2,13 +2,15 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=kilo
-// HERDR_INTEGRATION_VERSION=4
+// HERDR_INTEGRATION_VERSION=5
 
 import net from "node:net";
 
 const SOURCE = "herdr:kilo";
 const AGENT = "kilo";
 let reportSeq = Date.now() * 1000;
+// First-prompt heuristic once per session.
+let heuristicTitleReported = false;
 
 function nextReportSeq() {
   reportSeq += 1;
@@ -134,6 +136,9 @@ function reportTitle(title, clear = false) {
   if (!clear && !title) {
     return Promise.resolve();
   }
+  if (clear) {
+    heuristicTitleReported = false;
+  }
   return request("pane.report_metadata", {
     ...(clear ? { clear_title: true } : { title }),
   });
@@ -157,9 +162,13 @@ export const HerdrAgentStatePlugin = async () => {
 
   return {
     "chat.message": async ({ sessionID }, output) => {
-      const title = titleFromParts(output?.parts);
-      if (title) {
-        await reportTitle(title);
+      // Prefer existing harness/chat names: first prompt only.
+      if (!heuristicTitleReported) {
+        const title = titleFromParts(output?.parts);
+        if (title) {
+          await reportTitle(title);
+          heuristicTitleReported = true;
+        }
       }
       await reportState("working", sessionID);
     },

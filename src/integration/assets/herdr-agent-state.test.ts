@@ -660,3 +660,77 @@ test("OpenCode reports a task title from chat.message parts", async () => {
   const title = (metadata[0] as { params?: { title?: string } }).params?.title;
   expect(title).toBe("Ship task-based pane titles for concurrent agents");
 });
+
+test("OpenCode reports first-prompt title only once per session", async () => {
+  const requests = await startRecordingServer("opencode-once-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./opencode/herdr-agent-state.js");
+  const plugin = (mod.HerdrAgentStatePlugin ?? mod.default) as (
+    input: unknown,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  const hooks = await plugin({
+    client: {
+      session: {
+        get: async () => ({ data: { parentID: undefined } }),
+      },
+    },
+    directory: "/tmp",
+    worktree: "/tmp",
+    project: {},
+  } as never);
+  const chatMessage = hooks["chat.message"] as (
+    input: { sessionID: string },
+    output: { parts: Array<{ type: string; text?: string }> },
+  ) => Promise<void>;
+  expect(chatMessage).toBeTypeOf("function");
+
+  await chatMessage(
+    { sessionID: "opencode-session" },
+    { parts: [{ type: "text", text: "First prompt title for the pane" }] },
+  );
+  await chatMessage(
+    { sessionID: "opencode-session" },
+    { parts: [{ type: "text", text: "Second prompt must not clobber harness title" }] },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBe(1);
+  expect(titled[0]?.params?.title).toBe("First prompt title for the pane");
+});
+
+test("Pi reports first-prompt title only once per session", async () => {
+  const requests = await startRecordingServer("pi-once-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./pi/herdr-agent-state.ts");
+  const harness = createExtensionHarness();
+  const extension = (mod.default ?? mod) as (api: unknown) => void;
+  extension(harness.pi);
+  const ctx = {
+    hasUI: true,
+    sessionManager: {
+      getSessionFile: () => "/tmp/session.jsonl",
+      getSessionId: () => "session-1",
+    },
+    isIdle: () => true,
+  };
+  const sessionStart = harness.handlers.get("session_start");
+  const before = harness.handlers.get("before_agent_start");
+  expect(sessionStart).toBeTypeOf("function");
+  expect(before).toBeTypeOf("function");
+  await sessionStart?.({ reason: "startup" }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await before?.({ prompt: "First pi task title" }, ctx);
+  await before?.({ prompt: "Second pi prompt should not clobber" }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBe(1);
+  expect(titled[0]?.params?.title).toBe("First pi task title");
+});

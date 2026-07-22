@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=8
+# HERDR_INTEGRATION_VERSION=9
 set -eu
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
@@ -109,6 +109,47 @@ def summarize_title(prompt):
     return base.rstrip() + "…"
 
 
+
+def title_state_path(session_key):
+    # Small state file keyed by pane+session so we 1) skip heuristic after first
+    # prompt and 2) respect native/manual titles without thrashing later prompts.
+    base = os.environ.get("HERDR_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("TMPDIR") or "/tmp"
+    safe_pane = re.sub(r"[^A-Za-z0-9._-]+", "_", pane_id)[:80]
+    safe_session = re.sub(r"[^A-Za-z0-9._-]+", "_", session_key or "unknown")[:80]
+    directory = os.path.join(base, "herdr-integration-title-state")
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+    except Exception:
+        return None
+    return os.path.join(directory, f"{safe_pane}__{safe_session}.flag")
+
+def heuristic_title_already_reported(session_key):
+    path = title_state_path(session_key)
+    if not path:
+        return False
+    return os.path.exists(path)
+
+def mark_heuristic_title_reported(session_key):
+    path = title_state_path(session_key)
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("1\n")
+    except Exception:
+        pass
+
+def clear_heuristic_title_state(session_key):
+    path = title_state_path(session_key)
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
 if action == "session":
     if not agent_session_id:
         raise SystemExit(0)
@@ -144,6 +185,9 @@ if action == "session":
 elif action == "title":
     if hook_event_name not in ("UserPromptSubmit",):
         raise SystemExit(0)
+    # Once per session only — prefer existing harness/chat names over later prompts.
+    if heuristic_title_already_reported(agent_session_id):
+        raise SystemExit(0)
     title = summarize_title(hook_input.get("prompt"))
     if not title:
         raise SystemExit(0)
@@ -159,6 +203,7 @@ elif action == "title":
     if agent_session_path:
         params["agent_session_path"] = agent_session_path
     send("pane.report_metadata", params)
+    mark_heuristic_title_reported(agent_session_id)
 else:
     raise SystemExit(0)
 PY
