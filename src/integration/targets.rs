@@ -153,6 +153,14 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
         10,
         Some("*"),
     )?;
+    remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("title"))?;
+    ensure_command_hook(
+        hooks,
+        "UserPromptSubmit",
+        hook_command(&hook_path, Some("title")),
+        10,
+        None,
+    )?;
     remove_legacy_bash_hook_file(&hook_path)?;
 
     fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
@@ -201,6 +209,14 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
         hooks,
         "SessionStart",
         hook_command(&hook_path, Some("session")),
+        10,
+        None,
+    )?;
+    remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("title"))?;
+    ensure_command_hook(
+        hooks,
+        "UserPromptSubmit",
+        hook_command(&hook_path, Some("title")),
         10,
         None,
     )?;
@@ -580,6 +596,8 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
             updated_settings |=
                 remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("working"))?;
             updated_settings |=
+                remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("title"))?;
+            updated_settings |=
                 remove_hook_commands(hooks, "PreToolUse", &hook_path, Some("working"))?;
             updated_settings |=
                 remove_hook_commands(hooks, "PermissionRequest", &hook_path, Some("blocked"))?;
@@ -634,6 +652,8 @@ pub(crate) fn uninstall_codex() -> io::Result<CodexUninstallResult> {
                 remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
             updated_hooks |=
                 remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("working"))?;
+            updated_hooks |=
+                remove_hook_commands(hooks, "UserPromptSubmit", &hook_path, Some("title"))?;
             updated_hooks |=
                 remove_hook_commands(hooks, "PreToolUse", &hook_path, Some("working"))?;
             updated_hooks |=

@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=kilo
-// HERDR_INTEGRATION_VERSION=3
+// HERDR_INTEGRATION_VERSION=4
 
 import net from "node:net";
 
@@ -13,6 +13,44 @@ let reportSeq = Date.now() * 1000;
 function nextReportSeq() {
   reportSeq += 1;
   return reportSeq;
+}
+
+const TITLE_MAX_LEN = 72;
+function collapseWhitespace(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+function firstMeaningfulLine(text) {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = collapseWhitespace(raw);
+    if (!line) continue;
+    if (line.startsWith("#") || line.startsWith("//") || line.startsWith("```")) continue;
+    return line;
+  }
+  return collapseWhitespace(text);
+}
+function summarizeTitle(prompt) {
+  if (typeof prompt !== "string") return undefined;
+  let text = firstMeaningfulLine(prompt);
+  if (!text) return undefined;
+  text = text.replace(/^\/[a-zA-Z0-9_-]+\s+/, "");
+  text = collapseWhitespace(text);
+  if (!text) return undefined;
+  if (text.length <= TITLE_MAX_LEN) return text;
+  const slice = text.slice(0, TITLE_MAX_LEN - 1);
+  const cut = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("/"), slice.lastIndexOf("-"));
+  const base = cut >= 24 ? slice.slice(0, cut) : slice;
+  return `${base.trimEnd()}…`;
+}
+function titleFromParts(parts) {
+  if (!Array.isArray(parts)) return undefined;
+  const chunks = [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      chunks.push(part.text);
+    }
+  }
+  return summarizeTitle(chunks.join("\n"));
 }
 
 function sessionIDFromProperties(properties) {
@@ -91,6 +129,15 @@ function reportSession(sessionID) {
   return request("pane.report_agent_session", { agent_session_id: sessionID });
 }
 
+
+function reportTitle(title, clear = false) {
+  if (!clear && !title) {
+    return Promise.resolve();
+  }
+  return request("pane.report_metadata", {
+    ...(clear ? { clear_title: true } : { title }),
+  });
+}
 function reportState(state, sessionID) {
   const params = { state };
   if (sessionID) {
@@ -109,7 +156,11 @@ export const HerdrAgentStatePlugin = async () => {
   }
 
   return {
-    "chat.message": async ({ sessionID }) => {
+    "chat.message": async ({ sessionID }, output) => {
+      const title = titleFromParts(output?.parts);
+      if (title) {
+        await reportTitle(title);
+      }
       await reportState("working", sessionID);
     },
     event: async ({ event }) => {

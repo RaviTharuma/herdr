@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Official Pi, Oh My Pi, Claude Code, Codex, OpenCode, and Kilo integrations now report task-derived pane titles through `pane.report_metadata` after the first user prompt, and clear them on new/resumed sessions.
+
 ## [0.7.5] - 2026-07-21
 
 ### Breaking Changes

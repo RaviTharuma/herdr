@@ -388,6 +388,7 @@ test("Pi waits for a replacement session report before publishing state", async 
   }
   expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
     "pane.report_agent_session",
+    "pane.report_metadata",
     "pane.report_agent",
   ]);
 });
@@ -435,10 +436,45 @@ async function startDroppedFirstResponseServer(name: string) {
 }
 
 test("Oh My Pi retries working before a queued idle state", async () => {
-  const { attemptedRequests } = await startDroppedFirstResponseServer("omp-retry");
+  const recordingSocketPath = join(tmpdir(), `herdr-omp-retry-${process.pid}.sock`);
+  socketPath = recordingSocketPath;
+  await rm(recordingSocketPath, { force: true });
+
+  const attemptedRequests: unknown[] = [];
+  let droppedAgentReport = false;
+  const recordingServer = createServer((socket) => {
+    let input = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      input += chunk;
+      const newline = input.indexOf("\n");
+      if (newline === -1) {
+        return;
+      }
+      const request = JSON.parse(input.slice(0, newline));
+      attemptedRequests.push(request);
+      // Drop only the first agent-state report so title-clear metadata does not
+      // consume the retry path this test is covering.
+      if (
+        !droppedAgentReport &&
+        isRecord(request) &&
+        request.method === "pane.report_agent"
+      ) {
+        droppedAgentReport = true;
+        return;
+      }
+      socket.end("{}\n");
+    });
+  });
+  server = recordingServer;
+  await new Promise<void>((resolve, reject) => {
+    recordingServer.once("error", reject);
+    recordingServer.listen(recordingSocketPath, resolve);
+  });
+  configureIntegrationEnvironment(recordingSocketPath);
+
   process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
   const { handlers, pi } = createExtensionHarness();
-
   const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
   install(pi);
 
@@ -450,18 +486,24 @@ test("Oh My Pi retries working before a queued idle state", async () => {
       getSessionId: () => undefined,
     },
   };
+  const agentAttempts = () =>
+    attemptedRequests.filter(
+      (request) => isRecord(request) && request.method === "pane.report_agent",
+    );
+
   handlers.get("session_start")?.({ reason: "startup" }, context);
   handlers.get("agent_end")?.({ messages: [] }, context);
 
   const deadline = Date.now() + 2_500;
-  while (Date.now() < deadline && attemptedRequests.length < 3) {
+  while (Date.now() < deadline && agentAttempts().length < 3) {
     await Bun.sleep(5);
   }
 
-  expect(attemptedRequests).toHaveLength(3);
-  expect(attemptedRequests[1]).toEqual(attemptedRequests[0]);
-  expect(requestState(attemptedRequests[0])).toBe("working");
-  expect(requestState(attemptedRequests[2])).toBe("idle");
+  const stateAttempts = agentAttempts();
+  expect(stateAttempts).toHaveLength(3);
+  expect(stateAttempts[1]).toEqual(stateAttempts[0]);
+  expect(requestState(stateAttempts[0])).toBe("working");
+  expect(requestState(stateAttempts[2])).toBe("idle");
 });
 
 test("Pi retries working state after an unanswered socket attempt", async () => {
@@ -545,3 +587,76 @@ function requestState(request: unknown): unknown {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+
+for (const integration of integrations) {
+  test(`${integration.name} reports a task title from before_agent_start`, async () => {
+    const requests = await startRecordingServer(integration.name.toLowerCase().replaceAll(" ", "-"));
+    configureIntegrationEnvironment(socketPath!);
+    const mod = await importFresh(integration.modulePath);
+    const harness = createExtensionHarness();
+    const extension = (mod.default ?? mod) as (api: unknown) => void;
+    extension(harness.pi);
+    const ctx = {
+      hasUI: true,
+      sessionManager: {
+        getSessionFile: () => "/tmp/session.jsonl",
+        getSessionId: () => "session-1",
+      },
+      isIdle: () => true,
+    };
+    const sessionStart = harness.handlers.get("session_start");
+    expect(sessionStart).toBeTypeOf("function");
+    await sessionStart?.({ reason: "startup" }, ctx);
+    // session_start clears title first; wait for that report.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const before = harness.handlers.get("before_agent_start");
+    expect(before).toBeTypeOf("function");
+    await before?.(
+      { prompt: "Refactor auth middleware to support OAuth refresh tokens" },
+      ctx,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const metadata = requests.filter(
+      (request) => (request as { method?: string }).method === "pane.report_metadata",
+    ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+    const titled = metadata.filter((request) => typeof request.params?.title === "string");
+    expect(titled.length).toBeGreaterThan(0);
+    expect(titled[titled.length - 1]?.params?.title).toBe(
+      "Refactor auth middleware to support OAuth refresh tokens",
+    );
+  });
+}
+
+test("OpenCode reports a task title from chat.message parts", async () => {
+  const requests = await startRecordingServer("opencode-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./opencode/herdr-agent-state.js");
+  const plugin = (mod.HerdrAgentStatePlugin ?? mod.default) as (input: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  const hooks = await plugin({
+    client: {
+      session: {
+        get: async () => ({ data: { parentID: undefined } }),
+      },
+    },
+    directory: "/tmp",
+    worktree: "/tmp",
+    project: {},
+  } as never);
+  const chatMessage = hooks["chat.message"] as (
+    input: { sessionID: string },
+    output: { parts: Array<{ type: string; text?: string }> },
+  ) => Promise<void>;
+  expect(chatMessage).toBeTypeOf("function");
+  await chatMessage(
+    { sessionID: "opencode-session" },
+    { parts: [{ type: "text", text: "Ship task-based pane titles for concurrent agents" }] },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  );
+  expect(metadata.length).toBeGreaterThan(0);
+  const title = (metadata[0] as { params?: { title?: string } }).params?.title;
+  expect(title).toBe("Ship task-based pane titles for concurrent agents");
+});

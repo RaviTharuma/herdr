@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=6
+// HERDR_INTEGRATION_VERSION=7
 // @ts-nocheck
 
 import net from "node:net";
@@ -68,6 +68,34 @@ let currentAgentSessionPath: string | undefined;
 function nextReportSeq(): number {
   reportSeq += 1;
   return reportSeq;
+}
+
+const TITLE_MAX_LEN = 72;
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+function firstMeaningfulLine(text: string): string {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = collapseWhitespace(raw);
+    if (!line) continue;
+    if (line.startsWith("#") || line.startsWith("//") || line.startsWith("```")) continue;
+    return line;
+  }
+  return collapseWhitespace(text);
+}
+function summarizeTitle(prompt: unknown): string | undefined {
+  if (typeof prompt !== "string") return undefined;
+  let text = firstMeaningfulLine(prompt);
+  if (!text) return undefined;
+  // Strip common slash-command prefixes while keeping the task text.
+  text = text.replace(/^\/[a-zA-Z0-9_-]+\s+/, "");
+  text = collapseWhitespace(text);
+  if (!text) return undefined;
+  if (text.length <= TITLE_MAX_LEN) return text;
+  const slice = text.slice(0, TITLE_MAX_LEN - 1);
+  const cut = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("/"), slice.lastIndexOf("-"));
+  const base = cut >= 24 ? slice.slice(0, cut) : slice;
+  return `${base.trimEnd()}…`;
 }
 
 function updateSessionRef(ctx: any): void {
@@ -142,6 +170,23 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
   });
 }
 
+
+function reportTitle(title: string | undefined, clear = false): Promise<void> {
+  if (!clear && !title) {
+    return Promise.resolve();
+  }
+  return sendRequest({
+    id: `${source}:title:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    method: "pane.report_metadata",
+    params: withSessionRef({
+      pane_id: paneId,
+      source,
+      agent: "pi",
+      seq: nextReportSeq(),
+      ...(clear ? { clear_title: true } : { title }),
+    }),
+  });
+}
 function releaseAgent(): Promise<void> {
   return sendRequest({
     id: `${source}:release:${Date.now()}:${Math.random().toString(36).slice(2)}`,
@@ -252,6 +297,8 @@ export default function (pi) {
     rootSession = true;
     updateSessionRef(ctx);
     await reportSession(event?.reason);
+    // Drop stale task titles when the extension rebinds for a new/resumed session.
+    await reportTitle(undefined, true);
     // A reload can replace this extension mid-run without emitting another agent_start.
     agentActive = ctx?.isIdle?.() === false;
     publishState(true);
@@ -265,6 +312,17 @@ export default function (pi) {
     void reportSession();
     agentActive = true;
     publishState();
+  });
+
+  pi.on("before_agent_start", (event, ctx) => {
+    if (!rootSession) {
+      return;
+    }
+    updateSessionRef(ctx);
+    const title = summarizeTitle(event?.prompt);
+    if (title) {
+      void reportTitle(title);
+    }
   });
 
   pi.on("agent_settled", (_event, ctx) => {
