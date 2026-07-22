@@ -55,6 +55,27 @@ function titleFromParts(parts) {
   return summarizeTitle(chunks.join("\n"));
 }
 
+// Kilo follows OpenCode's session title model: placeholder defaults until a
+// real chat title exists. Prefer the real title when present.
+function isDefaultOpenCodeTitle(title) {
+  return (
+    typeof title === "string" &&
+    /^(New session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+      title,
+    )
+  );
+}
+function nativeSessionTitle(info) {
+  const title = typeof info?.title === "string" ? collapseWhitespace(info.title) : "";
+  if (!title || isDefaultOpenCodeTitle(title)) return undefined;
+  if (title.length <= TITLE_MAX_LEN) return title;
+  const slice = title.slice(0, TITLE_MAX_LEN - 1);
+  const cut = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("/"), slice.lastIndexOf("-"));
+  const base = cut >= 24 ? slice.slice(0, cut) : slice;
+  return `${base.trimEnd()}…`;
+}
+
+
 function sessionIDFromProperties(properties) {
   return typeof properties?.sessionID === "string" && properties.sessionID
     ? properties.sessionID
@@ -176,11 +197,23 @@ export const HerdrAgentStatePlugin = async () => {
       const type = event?.type;
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
+      const info = properties.info;
 
       switch (type) {
         case "session.created":
         case "session.updated":
           await reportSession(sessionID);
+          if (type === "session.created") {
+            await reportTitle(undefined, true);
+          }
+          {
+            // Prefer Kilo/OpenCode's own session title when it is no longer the
+            // placeholder default.
+            const nativeTitle = nativeSessionTitle(info);
+            if (nativeTitle) {
+              await reportTitle(nativeTitle);
+            }
+          }
           break;
         case "session.status": {
           const state = stateFromSessionStatus(properties.status);

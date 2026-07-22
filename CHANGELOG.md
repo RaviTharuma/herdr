@@ -3,6 +3,9 @@
 ## Unreleased
 ### Added
 - Official Pi, Oh My Pi, Claude Code, Codex, OpenCode, and Kilo integrations now report task-derived pane titles through `pane.report_metadata` after the first user prompt, and clear them on new/resumed sessions.
+- OpenCode and Kilo integrations now prefer the agent's own generated chat title (when it is no longer the placeholder default) over the first-prompt heuristic.
+- Integration task titles are reported only once per session (first prompt / first native harness title); later prompts do not clobber an existing title.
+
 
 ## [0.7.5] - 2026-07-21
 

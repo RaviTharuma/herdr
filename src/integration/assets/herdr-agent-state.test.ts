@@ -661,6 +661,137 @@ test("OpenCode reports a task title from chat.message parts", async () => {
   expect(title).toBe("Ship task-based pane titles for concurrent agents");
 });
 
+test("OpenCode prefers native session title over first-prompt heuristic", async () => {
+  const requests = await startRecordingServer("opencode-native-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./opencode/herdr-agent-state.js");
+  const plugin = (mod.HerdrAgentStatePlugin ?? mod.default) as (
+    input: unknown,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  const hooks = await plugin({
+    client: {
+      session: {
+        get: async () => ({ data: { parentID: undefined } }),
+      },
+    },
+    directory: "/tmp",
+    worktree: "/tmp",
+    project: {},
+  } as never);
+  const chatMessage = hooks["chat.message"] as (
+    input: { sessionID: string },
+    output: { parts: Array<{ type: string; text?: string }> },
+  ) => Promise<void>;
+  const event = hooks.event as (input: {
+    event: { type: string; properties: Record<string, unknown> };
+  }) => Promise<void>;
+  expect(chatMessage).toBeTypeOf("function");
+  expect(event).toBeTypeOf("function");
+
+  await chatMessage(
+    { sessionID: "opencode-session" },
+    { parts: [{ type: "text", text: "Ship task-based pane titles for concurrent agents" }] },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await event({
+    event: {
+      type: "session.updated",
+      properties: {
+        sessionID: "opencode-session",
+        info: {
+          id: "opencode-session",
+          title: "Concurrent agent pane titles",
+        },
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBeGreaterThan(1);
+  expect(titled[titled.length - 1]?.params?.title).toBe("Concurrent agent pane titles");
+});
+
+test("OpenCode ignores placeholder default session titles", async () => {
+  const requests = await startRecordingServer("opencode-default-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./opencode/herdr-agent-state.js");
+  const plugin = (mod.HerdrAgentStatePlugin ?? mod.default) as (
+    input: unknown,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  const hooks = await plugin({
+    client: {
+      session: {
+        get: async () => ({ data: { parentID: undefined } }),
+      },
+    },
+    directory: "/tmp",
+    worktree: "/tmp",
+    project: {},
+  } as never);
+  const event = hooks.event as (input: {
+    event: { type: string; properties: Record<string, unknown> };
+  }) => Promise<void>;
+  expect(event).toBeTypeOf("function");
+
+  await event({
+    event: {
+      type: "session.updated",
+      properties: {
+        sessionID: "opencode-session",
+        info: {
+          id: "opencode-session",
+          title: "New session - 2026-04-03T07:39:39.106Z",
+        },
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBe(0);
+});
+
+test("Kilo reports a native chat title from session.updated", async () => {
+  const requests = await startRecordingServer("kilo-native-title");
+  configureIntegrationEnvironment(socketPath!);
+  const mod = await importFresh("./kilo/herdr-agent-state.js");
+  const plugin = (mod.HerdrAgentStatePlugin ?? mod.default) as (
+    input: unknown,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  const hooks = await plugin({} as never);
+  const event = hooks.event as (input: {
+    event: { type: string; properties: Record<string, unknown> };
+  }) => Promise<void>;
+  expect(event).toBeTypeOf("function");
+
+  await event({
+    event: {
+      type: "session.updated",
+      properties: {
+        sessionID: "kilo-session",
+        info: {
+          id: "kilo-session",
+          title: "Fix sidebar title flicker",
+        },
+      },
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const metadata = requests.filter(
+    (request) => (request as { method?: string }).method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBeGreaterThan(0);
+  expect(titled[titled.length - 1]?.params?.title).toBe("Fix sidebar title flicker");
 test("OpenCode reports first-prompt title only once per session", async () => {
   const requests = await startRecordingServer("opencode-once-title");
   configureIntegrationEnvironment(socketPath!);

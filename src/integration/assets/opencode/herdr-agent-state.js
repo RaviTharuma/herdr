@@ -69,6 +69,27 @@ function titleFromParts(parts) {
   return summarizeTitle(chunks.join("\n"));
 }
 
+// OpenCode creates placeholder titles like "New session - 2026-04-03T07:39:39.106Z"
+// until it generates a real chat title. Prefer the real title when present; keep
+// the first-prompt fallback otherwise.
+function isDefaultOpenCodeTitle(title) {
+  return (
+    typeof title === "string" &&
+    /^(New session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+      title,
+    )
+  );
+}
+function nativeSessionTitle(info) {
+  const title = typeof info?.title === "string" ? collapseWhitespace(info.title) : "";
+  if (!title || isDefaultOpenCodeTitle(title)) return undefined;
+  if (title.length <= TITLE_MAX_LEN) return title;
+  const slice = title.slice(0, TITLE_MAX_LEN - 1);
+  const cut = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("/"), slice.lastIndexOf("-"));
+  const base = cut >= 24 ? slice.slice(0, cut) : slice;
+  return `${base.trimEnd()}…`;
+}
+
 function sessionIDFromProperties(properties) {
   return typeof properties?.sessionID === "string" && properties.sessionID
     ? properties.sessionID
@@ -223,10 +244,26 @@ export const HerdrAgentStatePlugin = async () => {
           // prior session id instead of treating the change as cross-talk.
           await reportSession(sessionID, "new");
           await reportTitle(undefined, true);
+          {
+            // Prefer OpenCode's own session title when it is no longer the
+            // placeholder default (usually still default at create time).
+            const nativeTitle = nativeSessionTitle(info);
+            if (nativeTitle) {
+              await reportTitle(nativeTitle);
+            }
+          }
           break;
         case "session.updated":
           if (sessionID && sessionID !== reportedRootSessionID) {
             await reportSession(sessionID);
+          }
+          {
+            // OpenCode generates a real chat title asynchronously after the
+            // first turns. Prefer that over the first-prompt heuristic.
+            const nativeTitle = nativeSessionTitle(info);
+            if (nativeTitle) {
+              await reportTitle(nativeTitle);
+            }
           }
           break;
         case "session.status": {
