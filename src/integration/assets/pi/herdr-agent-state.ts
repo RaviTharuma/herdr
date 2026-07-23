@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=8
+// HERDR_INTEGRATION_VERSION=9
 // @ts-nocheck
 
 import net from "node:net";
@@ -12,6 +12,7 @@ const socketPath = process.env.HERDR_SOCKET_PATH;
 const socketEndpoint =
   process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
+const tabId = process.env.HERDR_TAB_ID;
 const source = "herdr:pi";
 
 function enabled() {
@@ -64,9 +65,12 @@ type QueuedState = {
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
-// Prefer existing harness/chat names once set. First-prompt heuristic only fills
-// the empty slot once per session; later prompts must not clobber it.
+// Prefer existing harness/chat names once set.
+// - Native Pi session names (session_info_changed / getSessionName) win and lock.
+// - First-prompt heuristic only fills the empty slot once per session.
+// - Later prompts must not clobber a native or previously reported title.
 let heuristicTitleReported = false;
+let nativeTitleLocked = false;
 
 function nextReportSeq(): number {
   reportSeq += 1;
@@ -174,13 +178,26 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
 }
 
 
-function reportTitle(title: string | undefined, clear = false): Promise<void> {
+function reportTitle(
+  title: string | undefined,
+  options: { clear?: boolean; native?: boolean; displayAgent?: string } = {},
+): Promise<void> {
+  const clear = options.clear === true;
+  const native = options.native === true;
   if (!clear && !title) {
     return Promise.resolve();
   }
   if (clear) {
     heuristicTitleReported = false;
+    nativeTitleLocked = false;
+  } else if (native) {
+    nativeTitleLocked = true;
+    heuristicTitleReported = true;
   } else {
+    // Heuristic path: never clobber a native lock.
+    if (nativeTitleLocked) {
+      return Promise.resolve();
+    }
     heuristicTitleReported = true;
   }
   return sendRequest({
@@ -191,9 +208,39 @@ function reportTitle(title: string | undefined, clear = false): Promise<void> {
       source,
       agent: "pi",
       seq: nextReportSeq(),
-      ...(clear ? { clear_title: true } : { title }),
+      ...(clear
+        ? { clear_title: true, clear_display_agent: true }
+        : {
+            title,
+            ...(options.displayAgent ? { display_agent: options.displayAgent } : {}),
+          }),
     }),
   });
+}
+
+function normalizeSessionName(name: unknown): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const text = collapseWhitespace(name);
+  return text ? text : undefined;
+}
+
+async function reportNativeSessionName(name: unknown): Promise<void> {
+  const normalized = normalizeSessionName(name);
+  if (!normalized) {
+    // Empty/missing native name does not clear an existing heuristic title mid-session.
+    return;
+  }
+  await reportTitle(normalized, { native: true, displayAgent: normalized });
+  if (tabId) {
+    await sendRequest({
+      id: `${source}:tab:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      method: "tab.rename",
+      params: {
+        tab_id: tabId,
+        label: normalized,
+      },
+    });
+  }
 }
 function releaseAgent(): Promise<void> {
   return sendRequest({
@@ -306,10 +353,19 @@ export default function (pi) {
     updateSessionRef(ctx);
     await reportSession(event?.reason);
     // Drop stale task titles when the extension rebinds for a new/resumed session.
-    await reportTitle(undefined, true);
+    await reportTitle(undefined, { clear: true });
+    // Prefer Pi's own session name when the harness already has one (resume / rename).
+    await reportNativeSessionName(ctx?.sessionManager?.getSessionName?.());
     // A reload can replace this extension mid-run without emitting another agent_start.
     agentActive = ctx?.isIdle?.() === false;
     publishState(true);
+  });
+
+  pi.on("session_info_changed", async (event) => {
+    if (!rootSession) {
+      return;
+    }
+    await reportNativeSessionName(event?.name);
   });
 
   pi.on("agent_start", (_event, ctx) => {
@@ -327,8 +383,8 @@ export default function (pi) {
       return;
     }
     updateSessionRef(ctx);
-    // Once per session only — keep any later harness/manual name intact.
-    if (heuristicTitleReported) {
+    // Once per session only — keep any later harness/manual/native name intact.
+    if (heuristicTitleReported || nativeTitleLocked) {
       return;
     }
     const title = summarizeTitle(event?.prompt);

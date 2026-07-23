@@ -11,6 +11,7 @@ const originalEnvironment = {
   HERDR_OMP_IDLE_DEBOUNCE_MS: process.env.HERDR_OMP_IDLE_DEBOUNCE_MS,
   HERDR_PANE_ID: process.env.HERDR_PANE_ID,
   HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
+  HERDR_TAB_ID: process.env.HERDR_TAB_ID,
 };
 
 let server: Server | undefined;
@@ -792,6 +793,8 @@ test("Kilo reports a native chat title from session.updated", async () => {
   const titled = metadata.filter((request) => typeof request.params?.title === "string");
   expect(titled.length).toBeGreaterThan(0);
   expect(titled[titled.length - 1]?.params?.title).toBe("Fix sidebar title flicker");
+});
+
 test("OpenCode reports first-prompt title only once per session", async () => {
   const requests = await startRecordingServer("opencode-once-title");
   configureIntegrationEnvironment(socketPath!);
@@ -865,3 +868,101 @@ test("Pi reports first-prompt title only once per session", async () => {
   expect(titled.length).toBe(1);
   expect(titled[0]?.params?.title).toBe("First pi task title");
 });
+
+test("Pi prefers native session name over first-prompt heuristic", async () => {
+  const requests = await startRecordingServer("pi-native-session-name");
+  configureIntegrationEnvironment(socketPath!);
+  process.env.HERDR_TAB_ID = "tab-native-1";
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => true,
+    sessionManager: {
+      getSessionFile: () => "/tmp/pi-named.jsonl",
+      getSessionId: () => "pi-named",
+      getSessionName: () => "Refactor auth flow",
+    },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() =>
+    requests.some(
+      (request) =>
+        isRecord(request) &&
+        request.method === "pane.report_metadata" &&
+        isRecord(request.params) &&
+        request.params.title === "Refactor auth flow",
+    ),
+  );
+
+  // Heuristic must not clobber the native session name.
+  await handlers.get("before_agent_start")?.(
+    { prompt: "This later prompt should not replace the native title" },
+    context,
+  );
+  await Bun.sleep(30);
+
+  const metadata = requests.filter(
+    (request) => isRecord(request) && request.method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string; clear_title?: boolean; display_agent?: string } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled.length).toBeGreaterThan(0);
+  expect(titled[titled.length - 1]?.params?.title).toBe("Refactor auth flow");
+  expect(titled[titled.length - 1]?.params?.display_agent).toBe("Refactor auth flow");
+
+  const tabRenames = requests.filter(
+    (request) => isRecord(request) && request.method === "tab.rename",
+  ) as Array<{ params?: { tab_id?: string; label?: string } }>;
+  expect(tabRenames.length).toBeGreaterThan(0);
+  expect(tabRenames[tabRenames.length - 1]?.params).toEqual({
+    tab_id: "tab-native-1",
+    label: "Refactor auth flow",
+  });
+
+  delete process.env.HERDR_TAB_ID;
+});
+
+test("Pi updates title from session_info_changed", async () => {
+  const requests = await startRecordingServer("pi-session-info-changed");
+  configureIntegrationEnvironment(socketPath!);
+  delete process.env.HERDR_TAB_ID;
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => true,
+    sessionManager: {
+      getSessionFile: () => "/tmp/pi-info.jsonl",
+      getSessionId: () => "pi-info",
+      getSessionName: () => undefined,
+    },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() =>
+    requests.some(
+      (request) => isRecord(request) && request.method === "pane.report_agent_session",
+    ),
+  );
+
+  await handlers.get("session_info_changed")?.({ name: "Ship pane titles" }, context);
+  await waitFor(() =>
+    requests.some(
+      (request) =>
+        isRecord(request) &&
+        request.method === "pane.report_metadata" &&
+        isRecord(request.params) &&
+        request.params.title === "Ship pane titles",
+    ),
+  );
+
+  const metadata = requests.filter(
+    (request) => isRecord(request) && request.method === "pane.report_metadata",
+  ) as Array<{ params?: { title?: string } }>;
+  const titled = metadata.filter((request) => typeof request.params?.title === "string");
+  expect(titled[titled.length - 1]?.params?.title).toBe("Ship pane titles");
+});
+

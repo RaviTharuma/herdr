@@ -1,11 +1,12 @@
 # Changelog
 
 ## Unreleased
+
 ### Added
 - Official Pi, Oh My Pi, Claude Code, Codex, OpenCode, and Kilo integrations now report task-derived pane titles through `pane.report_metadata` after the first user prompt, and clear them on new/resumed sessions.
 - OpenCode and Kilo integrations now prefer the agent's own generated chat title (when it is no longer the placeholder default) over the first-prompt heuristic.
+- Pi integration prefers the harness session name (`session_info_changed` / `getSessionName`) when present, falls back to first-prompt heuristic, and renames the hosting tab when `HERDR_TAB_ID` is set.
 - Integration task titles are reported only once per session (first prompt / first native harness title); later prompts do not clobber an existing title.
-
 
 ### Changed
 - Relicensed Herdr from AGPL-3.0-or-later to Apache-2.0.
