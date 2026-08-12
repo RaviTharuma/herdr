@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crossterm::terminal;
 
 use super::{
-    background_update_check_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
+    background_update_check_enabled, pressed_key_identity, App, ANIMATION_INTERVAL,
     AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
     RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
@@ -139,20 +139,42 @@ impl App {
         let previous_mode = self.state.mode;
         let changed = match event {
             crate::raw_input::RawInputEvent::Key(key) => {
-                let key_id = repeat_key_identity(&key);
+                let pressed_key_id = pressed_key_identity(super::LOCAL_INPUT_SOURCE, &key);
                 match key.kind {
                     crossterm::event::KeyEventKind::Press => {
-                        if self.state.popup_pane.is_some() || self.state.mode == Mode::Terminal {
-                            self.suppressed_repeat_keys.remove(&key_id);
+                        if self.state.popup_pane.is_some()
+                            || self.state.mode == crate::app::Mode::Terminal
+                        {
+                            self.suppressed_repeat_keys.remove(&pressed_key_id);
                         } else {
-                            self.suppressed_repeat_keys.insert(key_id);
+                            self.suppressed_repeat_keys.insert(pressed_key_id);
                         }
-                        self.handle_key(key).await;
+                        if let Some(target) = self.handle_key(key).await {
+                            if !key.is_text_commit {
+                                self.pressed_terminal_keys.insert(
+                                    pressed_key_id,
+                                    super::PressedTerminalKey { target, key },
+                                );
+                            }
+                        } else {
+                            self.pressed_terminal_keys.remove(&pressed_key_id);
+                        }
                         true
                     }
                     crossterm::event::KeyEventKind::Repeat => {
-                        if (self.state.popup_pane.is_some() || self.state.mode == Mode::Terminal)
-                            && !self.suppressed_repeat_keys.contains(&key_id)
+                        if let Some(pressed) =
+                            self.pressed_terminal_keys.get(&pressed_key_id).cloned()
+                        {
+                            if !self
+                                .forward_terminal_key_to_target(&pressed.target, key)
+                                .await
+                            {
+                                self.pressed_terminal_keys.remove(&pressed_key_id);
+                            }
+                            true
+                        } else if (self.state.popup_pane.is_some()
+                            || self.state.mode == crate::app::Mode::Terminal)
+                            && !self.suppressed_repeat_keys.contains(&pressed_key_id)
                         {
                             self.handle_key(key).await;
                             true
@@ -161,7 +183,12 @@ impl App {
                         }
                     }
                     crossterm::event::KeyEventKind::Release => {
-                        self.suppressed_repeat_keys.remove(&key_id);
+                        self.suppressed_repeat_keys.remove(&pressed_key_id);
+                        if let Some(pressed) = self.pressed_terminal_keys.remove(&pressed_key_id) {
+                            let _ = self
+                                .forward_terminal_key_to_target(&pressed.target, key)
+                                .await;
+                        }
                         false
                     }
                 }
@@ -182,19 +209,23 @@ impl App {
             crate::raw_input::RawInputEvent::OuterFocusGained => {
                 self.send_outer_focus_event(crate::ghostty::FocusEvent::Gained);
                 if self.state.redraw_on_focus_gained {
-                    self.request_full_redraw();
+                    self.request_repaint();
                 }
                 self.state.outer_terminal_focus = Some(true);
                 self.state.mark_active_tab_seen();
                 true
             }
             crate::raw_input::RawInputEvent::OuterFocusLost => {
+                self.release_input_source(super::LOCAL_INPUT_SOURCE).await;
                 self.send_outer_focus_event(crate::ghostty::FocusEvent::Lost);
                 self.state.outer_terminal_focus = Some(false);
                 false
             }
             crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
                 self.update_host_terminal_theme(kind, color)
+            }
+            crate::raw_input::RawInputEvent::HostPaletteColors { colors } => {
+                self.update_host_terminal_palette_colors(&colors)
             }
             crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
                 self.query_host_terminal_theme();
@@ -290,6 +321,17 @@ impl App {
         {
             self.state.spinner_tick = self.state.spinner_tick.wrapping_add(1);
             self.next_animation_tick = Some(now + ANIMATION_INTERVAL);
+            changed = true;
+        }
+
+        // Status-row clock/metrics: low-cost invalidation so time updates even
+        // when all panes are idle. Collection stays off the Ratatui draw path.
+        if self
+            .next_status_metrics_refresh
+            .is_some_and(|deadline| now >= deadline)
+        {
+            let _ = crate::platform::status_metrics::refresh_status_metrics_if_due();
+            self.next_status_metrics_refresh = Some(now + super::STATUS_METRICS_REFRESH_INTERVAL);
             changed = true;
         }
 
@@ -611,6 +653,7 @@ impl App {
             self.state.next_managed_agent_deadline(),
             self.copy_feedback_deadline,
             self.next_animation_tick,
+            self.next_status_metrics_refresh,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),
@@ -750,6 +793,8 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         );
+        // Isolate scheduled-task tests from the independent status-row clock.
+        app.next_status_metrics_refresh = None;
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
         app.state.workspaces.push(ws);
@@ -848,6 +893,8 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
         app.last_git_remote_status_refresh = now - super::super::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        // Isolate the git-refresh timer from the independent status-row clock.
+        app.next_status_metrics_refresh = None;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
@@ -984,6 +1031,7 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         );
+        app.next_status_metrics_refresh = None;
         let mut ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
         let runtime =
@@ -1103,6 +1151,7 @@ mod tests {
                 g: 20,
                 b: 20,
             }),
+            ..Default::default()
         };
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -1118,6 +1167,8 @@ mod tests {
             dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
         });
         app.pending_agent_resume_deadline = Some(Instant::now() - Duration::from_millis(1));
+        // Isolate agent-resume behavior from the independent status-row clock.
+        app.next_status_metrics_refresh = None;
 
         assert!(!app.handle_scheduled_tasks(Instant::now(), true));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
